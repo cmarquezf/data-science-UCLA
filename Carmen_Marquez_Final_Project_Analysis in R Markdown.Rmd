@@ -1,0 +1,599 @@
+---
+title: "Capstone_project_Olist"
+author: "Carmen Marquez"
+date: "12/8/2019"
+output: html_document
+---
+
+The goal of my capstone project is understand and find out a way to predict Olist´s customers satisfaction.
+Olist(https://olist.com/) is a brazilian company that basically is a great sales channel it is present on the main marketplaces of Brazil and it is formed by thousands of retailers. It´s something similar to the "brazilian Amazon".
+I got the data from kaggle (https://www.kaggle.com/olistbr/brazilian-ecommerce and https://www.kaggle.com/olistbr/marketing-funnel-olist/home). After having a look to all the files available I decided to include in my analysis only the most relevant ones for the customer satisfaction, since the memory of my pc could not handle the total number of observation of all the files.
+
+So, the steps I followed to achieve my goal are the following:
+-First, I did a Exploratory Data Analysis to have a better understanding of the data I was dealing with
+-Second, I did a little of feature enginering, creating new variables and I clean the data dropping the variables that were not relevant of were missing to many values. Also I perform a sentiment analysis.
+-Third, I did some unsupervised analysis (Cluster analysis in particular) too see how homogeneous was the information and how it could be split into different categories.
+-Fourth, I did some supervised analysis. 
+   -1st. A multivariable lineal regression model using the review score as the dependent variable as a numeric variable.
+   -2n. An ordinal logistic regression model using the review score as the dependent variable as a factor
+   -3rd. I run different machine learning models and chose the random forest as the best.
+   
+-Fith, I decided to choose the ordinal logistic regression model and I interpret the results.
+
+
+
+1.Imported and merged the data files
+
+```{r}
+library(tidyverse)
+library(dplyr)
+
+#We need to import the data
+#As there are some blank values in our data, will replace it by NA
+
+setwd("C:/Users/hp/Desktop/DATA SCIENCE UCLA/Capstone project/Data Olist") 
+MQL <- read.csv("olist_marketing_qualified_leads_dataset.csv", na.strings = c("", "NA"))
+closed_deals <- read.csv("olist_closed_deals_dataset.csv", na.strings = c("", "NA"))
+total <- merge(closed_deals,MQL, by ="mql_id", all= TRUE)
+
+
+order_items <- read.csv("olist_order_items_dataset.csv", na.strings = c("", "NA"))
+order_reviews <- read.csv("olist_order_reviews_dataset _EN.csv", na.strings = c("", "NA"))
+orders <- read.csv("olist_orders_dataset.csv", na.strings = c("", "NA"))
+
+#The dataset "total" contains the Marketing funnel key variables, now let´s merge that information with the Brazilian e-commerce public dataset
+
+total1 <- merge(total,order_items, by ="seller_id", all= TRUE)
+
+total2 <- merge(total1,orders, by ="order_id", all= TRUE)
+
+total3 <- merge(total2,order_reviews, by ="order_id", all= TRUE)
+
+```
+
+2.Some Exploratory Data Analysis to understand better and clean our data
+
+```{r}
+#1.We drop the identifier variables as they are not usefull for our purpose
+
+ 
+remove02 = c("order_id", "seller_id" , "mql_id" , "sdr_id" , "sr_id","landing_page_id" , "product_id" , "customer_id" , "review_id")
+
+total4 = total3 %>% dplyr::select(-remove02)
+
+#2. We calculate son new variables from the date variables
+
+total4$won_date_new <- as.character(total4$won_date, format = "%Y-%m-%d")
+total4$won_date_new <- as.Date(total4$won_date_new, format = "%Y-%m-%d")
+total4$first_contact_date <- as.Date(total4$first_contact_date, format = "%Y-%m-%d")
+total4$conversion_time <- (total4$won_date_new- total4$first_contact_date)
+total4$conversion_time <- as.numeric(total4$conversion_time)
+
+total4$order_delivered_customer_date <- as.Date(total4$order_delivered_customer_date, format = "%Y-%m-%d")
+total4$order_purchase_timestamp <- as.Date(total4$order_purchase_timestamp, format = "%Y-%m-%d")
+total4$delivery_time <- total4$order_delivered_customer_date - total4$order_purchase_timestamp
+total4$delivery_time <- as.character(total4$delivery_time)
+total4$delivery_time <- as.numeric(total4$delivery_time)
+class(total4$delivery_time)
+
+total4$review_creation_date <- as.Date(total4$review_creation_date, format = "%Y-%m-%d")
+total4$feedback_time <- total4$review_creation_date - total4$order_purchase_timestamp
+total4$feedback_time <- as.numeric(total4$feedback_time)
+
+total4$order_estimated_delivery_date <- as.Date(total4$order_estimated_delivery_date, format = "%Y-%m-%d")
+total4$delay_time <- total4$order_delivered_customer_date -
+total4$order_estimated_delivery_date
+total4$delay_time <- as.numeric(total4$delay_time)
+
+total4$order_approved_at <- as.Date(total4$order_approved_at, format = "%Y-%m-%d")
+total4$approval_time <- total4$order_approved_at - total4$order_purchase_timestamp
+total4$approval_time <- as.numeric(total4$approval_time)
+
+#3. We delete the date variables since we got the information we need from them in our new variables
+
+remove03 = c("won_date", "shipping_limit_date", "order_purchase_timestamp", "order_approved_at", "order_delivered_carrier_date", "order_delivered_customer_date", "order_estimated_delivery_date", "review_creation_date" , "review_answer_timestamp", "won_date_new", "first_contact_date")
+
+total4 = total4 %>% dplyr::select(-remove03)
+  
+str(total4)
+
+#Next, we´re going to obtain the sentiment score from the variable "review comment in english" to keep this information as numeric
+
+library(sentimentr)
+library(stringr)
+library(tidyverse)
+library(tidytext)
+library(tm)
+library(gmodels)
+
+total4$EN_Review_comment_message <- as.character(total4$EN_Review_comment_message)
+En_review = get_sentences(total4$EN_Review_comment_message)
+df = sentiment_by(En_review)
+total4$sentiment = df$ave_sentiment
+
+#Now we got the sentiment score. Let´s look at the most popular words before dropping the text variables.
+
+#install.packages("RColorBrewer")
+library(wordcloud)
+library(RColorBrewer)
+library(tidyverse)
+library(tm)
+library(SnowballC)
+
+corpus = Corpus(VectorSource(total4$EN_Review_comment_message))
+corpus[[1]][1]
+
+#Conversion to Lowercase
+corpus = tm_map(corpus, PlainTextDocument)
+corpus = tm_map(corpus, tolower)
+ 
+#Removing Punctuation
+corpus = tm_map(corpus, removePunctuation)
+ 
+#Remove stopwords
+corpus = tm_map(corpus, removeWords, c("cloth", stopwords("english")))
+ 
+# Stemming
+corpus = tm_map(corpus, stemDocument)
+ 
+# Eliminate white spaces
+corpus = tm_map(corpus, stripWhitespace)
+corpus[[1]][1] 
+
+#Next step is extracting the word frequencies, to be used as tags, for building the word cloud:
+DTM <- TermDocumentMatrix(corpus)
+mat <- as.matrix(DTM)
+f <- sort(rowSums(mat),decreasing=TRUE)
+dat <- data.frame(word = names(f),freq=f)
+head(dat, 5)
+
+set.seed(100)
+wordcloud(words = dat$word, freq = dat$freq, min.freq = 3, max.words=250, random.order=FALSE, rot.per=0.30, colors=brewer.pal(8, "Dark2"))
+
+#4.Looking at the structure of our data there are some variables classified as a factor with too many levels, that´s because they should be classified as text. We are going to remove them since we don´t need them for our analysis. We´ll also remove other variables like the lead behaviour profile or the has_gtin, since we don´t know the meaning of them.
+
+remove04 = c("review_comment_message", "review_comment_title", "EN_Review_comment_message", "has_gtin", "lead_behaviour_profile")
+
+total5 = total4 %>% dplyr::select(-remove04)
+str(total5)
+
+
+#5.Now let´s undertand better the distribution and relationship between our variables
+
+
+#5.1 How many leads come from each origin source?
+
+#In this variable there are too many missing values, but before we drop it, let´s see what we can find out from the observations we have omitting those missing values using drop_na
+
+total5 %>% 
+  drop_na(origin) %>%
+  group_by(origin) %>% 
+  summarise(Count = n())%>% 
+  mutate(percent = prop.table(Count)*100)%>%
+  ggplot(aes(reorder(origin, -percent), percent), fill = origin, na.rm = TRUE)+
+  geom_col(fill = c("grey", "light blue", "blue", "light green", "brown", "yellow", "light grey", "pink", "light yellow", "green"))+
+  geom_text(aes(label = sprintf("%.1f%%", percent)), hjust = 0.2, vjust = 2, size = 5)+ 
+  theme_bw()+  
+  xlab("Source of the lead") + ylab("Percent") + ggtitle("Lead origin Percent")
+
+#Results: Paid search and Organic search seemst to be the best way to gain more leads, followed by social
+
+#5.2 Which business type is the most common?
+
+total5 %>%
+  drop_na(business_type) %>%
+  group_by(business_type) %>% 
+  summarise(Count = n())%>% 
+  mutate(percent = prop.table(Count)*100)%>%
+  ggplot(aes(reorder(business_type, -percent), percent), fill = business_type, na.rm = TRUE)+
+  geom_col(fill = c("light blue", "light green", "grey"))+
+  geom_text(aes(label = sprintf("%.1f%%", percent)), hjust = 0.2, vjust = 2, size = 5)+ 
+  theme_bw()+  
+  xlab("Business type") + ylab("Percent") + ggtitle("Business type Percent")
+
+#Results: 84% are resellers, so this is the type of business that should be targeted by Olist
+
+#5.3 Can we group the different categories from the business segment into less categories?
+
+#We can reduce the number of levels by grouping those with less frecuency, but in this case it´s better to group them using human judgement into similar categories
+
+library(ggplot2)
+library(ggpubr)
+
+
+ggplot(total5, aes(x = business_segment,  na.rm = TRUE)) +
+  geom_bar(fill = "#0073C2FF") +
+  theme_pubclean()
+
+library(dplyr)
+df <- total5 %>%
+  drop_na(business_segment) %>%
+  group_by(business_segment) %>%
+  summarise(counts = n())
+df
+
+total5$business_segment_new <- fct_collapse(total5$business_segment,
+  home = c("home_appliances", "home_decor", "home_office_furniture", "household_utilities", "bed_bath_table", "construction_tools_house_garden", "air_conditioning"),
+  food = c("food_supplement", "food_drink"),
+  health_sport = c("sports_leisure", "health_beauty", "bags_backpacks"),
+  electronics = c("audio_video_electronics", "computers", "games_consoles", "phone_mobile", "small_appliances", "watches"),
+  free_time = c("gifts", "party", "fashion_accessories", "books", "handcrafted", "music_instruments"),
+  kids = c("baby","toys"),
+  car = "car_accessories",
+  pet = "pet",
+  other = c("stationery", "religious"))
+
+#ggplot(total5, aes(x = business_segment_new, na.rm = TRUE)) +
+ # geom_bar(fill = "#0073C2FF", na.rm = TRUE) +
+ # theme_pubclean()
+
+?ggplot
+total5 %>%
+  drop_na(business_segment_new) %>%
+  group_by(business_segment_new) %>% 
+  summarise(Count = n())%>% 
+  mutate(percent = prop.table(Count)*100)%>%
+  ggplot(aes(reorder(business_segment_new, -percent), percent), fill = business_type, na.rm = TRUE)+
+  geom_col(fill = c("#66CC99", "#999999", "#CC6666", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7", "#9999CC"))+
+  geom_text(aes(label = sprintf("%.1f%%", percent)), hjust = 0.2, vjust = 2, size = 5)+ 
+  theme_bw()+  
+  xlab("Business segment new") + ylab("Percent") + ggtitle("Business segment Percent")
+
+#Results: The segment more popular is Home, health&sport and electronics.
+
+#Now we can drop the old "Business_segment" variable that contained too many levels
+
+total5$business_segment <- NULL
+
+str(total5)
+summary(total5)
+
+#5.4 We also may want to see the variances of our variables to find out if all of them will be adding usefull information to our analysis. (first let´s look at our numeric variables)
+
+total_num <- total5[-c(1:4,7,11, 19)]
+sapply(total_num, var, na.rm=TRUE)
+
+#The variable order_item_id revenue have a very low variance0, so we decide to drop it
+total5$order_item_id <- NULL
+
+#And for the categorical variables, we may want to have a look to the observations of each level 
+
+ggplot(total5, aes(has_company)) +
+  geom_bar(fill = "#0073C2FF") +
+  theme_pubclean()
+
+ggplot(total5, aes(average_stock)) +
+  geom_bar(fill = "#0073C2FF") +
+  theme_pubclean()
+
+ggplot(total5, aes(business_type)) +
+  geom_bar(fill = "#0073C2FF") +
+  theme_pubclean()
+
+ggplot(total5, aes(origin)) +
+  geom_bar(fill = "#0073C2FF") +
+  theme_pubclean()
+
+ggplot(total5, aes(order_status)) +
+  geom_bar(fill = "#0073C2FF") +
+  theme_pubclean()
+#Looking at the results, we decide to drop the variables: has_company, average_stock and order_status, since most of their observations are clasiffied in only one level, so they won´t bring usefull information to our analysis
+
+total5$has_company <- NULL
+total5$average_stock <- NULL
+total5$order_status <- NULL
+
+
+#6.Handling the remainding missing values
+
+missing_data <- total5 %>% summarise_all(funs(sum(is.na(.))/n()))
+missing_data <- gather(missing_data, key = "variables", value = "percent_missing")
+ggplot(missing_data, aes(x = reorder(variables, percent_missing), y = percent_missing)) +
+  geom_bar(stat = "identity", fill = "red", aes(color = I('white')), size = 0.3)+
+  xlab('variables')+
+  coord_flip()+ 
+  theme_bw()
+
+summary(total5)
+
+#We can see that still there are 7 variables with a high% of missing values (>100,000 obs). My decision is dropping those variables.
+
+total5$lead_type <- NULL
+total5$business_type <- NULL
+total5$declared_product_catalog_size <- NULL
+total5$declared_monthly_revenue <- NULL
+total5$origin <- NULL
+total5$conversion_time <- NULL
+total5$business_segment_new <- NULL
+
+summary(total5)
+
+
+#A better solution is remove the rows that cointains more than 50% of missing values
+#dat[-which(rowMeans(is.na(dat)) > 0.5), ] is not working, why?
+
+#Now we´ll remove the missing values of the remaining variables
+
+total6 <- na.omit(total5)
+summary(total6)
+
+#7. Correlation of remaining variables (looking for multicolinearity)
+
+cor(total6)
+heatmap(cor(total6), Rowv= NA, Colv = NA)
+
+library(corrplot)
+corrplot(cor(total6), method="number",type="lower")
+
+#Results: Feedback time (the number of days that pass since the customer buy an item until he/she writes a review) and Delivery time are high correlated (0.87), but we´ll keep both since their autocorrelation is not over 0.95.
+
+
+#8. Inspecting Distribution of the remaining data
+
+x0 <- total6$price
+h0<-hist(x0, breaks=10, col="red", xlab="Price", 
+   main="Histogram with Normal Curve") 
+x0fit<-seq(min(x0),max(x0),length=40) 
+y0fit<-dnorm(x0fit,mean=mean(x0),sd=sd(x0)) 
+y0fit <- y0fit*diff(h0$mids[1:2])*length(x0) 
+lines(x0fit, y0fit, col="blue", lwd=2)
+
+x1 <- total6$review_score
+h1<-hist(x1, breaks=10, col="red", x1lab="Review score", 
+   main="Histogram with Normal Curve") 
+x1fit<-seq(min(x1),max(x1),length=40) 
+yfit<-dnorm(x1fit,mean=mean(x1),sd=sd(x1)) 
+yfit <- yfit*diff(h1$mids[1:2])*length(x1) 
+lines(x1fit, yfit, col="blue", lwd=2)
+
+x <- total6$freight_value
+h <-hist(x, breaks=10, col="red", xlab="Freight_value", 
+   main="Histogram with Normal Curve") 
+xfit<-seq(min(x),max(x),length=40) 
+yfit<-dnorm(xfit,mean=mean(x),sd=sd(x)) 
+yfit <- yfit*diff(h$mids[1:2])*length(x) 
+lines(xfit, yfit, col="blue", lwd=2)
+
+x1 <- total6$delivery_time
+h1<-hist(x1, breaks=10, col="red", xlab="Delivery time", 
+   main="Histogram with Normal Curve") 
+x1fit<-seq(min(x1),max(x1),length=400) 
+y1fit<-dnorm(x1fit,mean=mean(x1),sd=sd(x1)) 
+y1fit <- y1fit*diff(h$mids[1:2])*length(x1) 
+lines(x1fit, y1fit, col="blue", lwd=2)
+
+x <- total6$feedback_time
+h<-hist(x, breaks=10, col="red", xlab="Feedback time", 
+   main="Histogram with Normal Curve") 
+xfit<-seq(min(x),max(x),length=40) 
+yfit<-dnorm(xfit,mean=mean(x),sd=sd(x)) 
+yfit <- yfit*diff(h$mids[1:2])*length(x) 
+lines(xfit, yfit, col="blue", lwd=2)
+
+x <- total6$delay_time
+h<-hist(x, breaks=10, col="red", xlab="Delay time", 
+   main="Histogram with Normal Curve") 
+xfit<-seq(min(x),max(x),length=40) 
+yfit<-dnorm(xfit,mean=mean(x),sd=sd(x)) 
+yfit <- yfit*diff(h$mids[1:2])*length(x) 
+lines(xfit, yfit, col="blue", lwd=2)
+
+x <- total6$approval
+h<-hist(x, breaks=10, col="red", xlab="Approval time", 
+   main="Histogram with Normal Curve") 
+xfit<-seq(min(x),max(x),length=40) 
+yfit<-dnorm(xfit,mean=mean(x),sd=sd(x)) 
+yfit <- yfit*diff(h$mids[1:2])*length(x) 
+lines(xfit, yfit, col="blue", lwd=2)
+```
+
+#3.Unsupervised analysis
+```{r}
+#CLUSTER Analysis
+
+library(cluster)
+library(factoextra)
+#install.packages("fastcluster")
+library(fastcluster)
+
+#km.out=kmeans(total6,2,nstart=5)
+
+#When I try to run the cluster analysis I get this message: "Error: cannot allocate vector of size 45.8 Gb", so I´m going to use Spark to solve this memory issue
+
+library(sparklyr) 
+library(dplyr) 
+sc = spark_connect(master = "local")
+# We need to copy the data frame "total6" into the database "sc" as a table.
+total6_tbl = copy_to(sc, total6)
+src_tbls(sc)
+
+spark_kmeans <-  ml_kmeans(total6_tbl, formula= NULL, k=3, max_iter = 10,
+features = c("price", "freight_value", "review_score", "delivery_time", "feedback_time", "delay_time","approval_time", "sentiment"))
+
+summary(spark_kmeans)
+
+#Time to compare the centers
+# creating data frame from kmeans centers
+spark_kmeans_centers <- data.frame(spark_kmeans$centers)
+# Printing centers of base and spark
+arrange(spark_kmeans_centers, review_score)
+
+#Since I can´t find a way to visualize the clusters using Spark, I´m going to drop randomly some observations so it will be possible to perform the cluster analysis from my laptop.
+
+
+total6_reduced <- total6[sample(nrow(total6), 50000), ]
+str(total6_reduced)
+
+total6_reduced$price <- scale(total6_reduced$price)
+total6_reduced$freight_value <- scale(total6_reduced$freight_value)
+total6_reduced$delivery_time <- scale(total6_reduced$delivery_time)
+total6_reduced$feedback_time <- scale(total6_reduced$feedback_time)
+total6_reduced$delay_time <- scale(total6_reduced$delay_time)
+total6_reduced$approval_time <- scale(total6_reduced$approval_time)
+total6_reduced$sentiment <- scale(total6_reduced$sentiment)
+
+
+km.out=kmeans(total6_reduced,2,nstart=25)
+#km.out$cluster
+#?fviz_cluster
+fviz_cluster(km.out, data= total6_reduced)
+plot(total6_reduced[,c("review_score","sentiment")], col=(km.out$cluster+1), 
+     main="K-Means Clustering Results with K=2", 
+     xlab="Review score", ylab="Sentiment", pch=20, cex=2)
+plot(total6_reduced[,c("review_score","delivery_time")], col=(km.out$cluster+1), 
+     main="K-Means Clustering Results with K=2", 
+     xlab="Review score", ylab="delivery time", pch=20, cex=2)
+plot(total6_reduced[,c("review_score","delay_time")], col=(km.out$cluster+1), 
+     main="K-Means Clustering Results with K=2", 
+     xlab="Review score", ylab="Delay time", pch=20, cex=2)
+```
+
+#SUPERVISED ANALYSIS (Regression predictive modeling)
+Treating the dependent variable as a numeric variable
+```{r}
+#Regression model
+
+#Let´s see which variables explain the variability of the review score and see if we find the best model to predict it
+
+fit01=lm(review_score ~., data=total6)
+summary(fit01)
+plot(fit01)
+
+#We found a model that explain the 14,79% of the review score variability.
+#The most significant variables are the sentiment score(+), the delivery time(-), the delay time(-), the feedback time(-), the freight value (+). Followed by price, which is less significant and approval time, which is not significant.
+
+#We can run a 2nd regression model dropping that slightly significant variable and the R2 will not change.
+
+fit02=lm(review_score ~ sentiment+delivery_time+delay_time+feedback_time+freight_value+price, data=total6)
+summary(fit02)
+```
+
+#Supervised analysis (Ordered logistic regression model)
+Treating the dependent variable as an ordinal categorical variable
+```{r}
+#We can´t use the regular logistic model since our dependent variable is not binary, it is a categorical variable with several levels that are ordered, like a rank. So we are going to run an ordered logistic models and improve it using the Stepwise AIC method.
+
+#install.packages("stargazer")
+library(stargazer)
+library(MASS)
+
+str(total6)
+total6$review_score=as.factor(total6$review_score)
+
+olm <- polr(review_score ~., data=total6, Hess=TRUE, method="logistic")
+summary(olm) 
+print(olm)
+
+#To get the pvalues we store the coefficient table, then calculate the p-values and combine back with the table:
+(ctable <- coef(summary(olm)))
+p <- pnorm(abs(ctable[, "t value"]), lower.tail = FALSE) * 2
+(ctable <- cbind(ctable, "p value" = p))
+
+#Interpretation of the 1st ordinal logistic model:
+#Since the p-value for all the variables <0.05, hence they are statistically significant at 95% CI. The variable with the biggest pvalue is the approval time.
+
+#As our predictive variables are continuous they can be interpreted as: E.g. With 1 unit increase in the delivery time the log of odds of a customer giving a better review score decreases by 0.069
+
+#The intercepts can be interpreted in the following way: E.g. 1|2 means the log of odds of giving a review of 1, versus giving a review of 2,3,4 or 5. 
+
+#USing stepAIC to improve the model
+step <- stepAIC(olm, direction="both")
+step$anova
+print(step)
+
+#As we can see the variable approval time has been removed, and although the AIC has not improved too much, now the model is now more simple.
+
+(ctable <- coef(summary(step)))
+p1 <- pnorm(abs(ctable[, "t value"]), lower.tail = FALSE) * 2
+(ctable <- cbind(ctable, "p value" = p1))
+
+#Interpretation of the improved ordinal logistic model:
+#All the variables are statistically significant at 95% CI. The variables with the biggest pvalue are now the freight value and the price.
+
+#Our predictive variables are continuous so they can be interpreted as: E.g. With 1 unit increase in the delivery time the log of odds of a customer giving a better review score decreases by 0.069
+
+#The intercepts can be interpreted in the following way: E.g. 1|2 means the log of odds of giving a review of 1, versus giving a review of 2,3,4 or 5. 
+
+#Test and train our logisitc model 
+#Set Testing Criteria -70/30
+numberofobs = round(length(total6$review_score) * .7)
+
+#Split Test and Train data
+train <- total6[1:numberofobs,]
+test <- total6[-(1:numberofobs),]
+
+#Make predictions(Step)
+setup2 <- test
+setup2[, c("pred.prob")] <- predict(step, newdata=setup2, type="probs")
+setup2[, c("pred.prob")] <- predict(step, newdata=setup2, type="class")
+setup2$residuals <- residuals(step, type="response")
+
+#Step AIC model confusion matrix
+library(caret)
+confusionMatrix(setup2$pred.prob, test$review_score, positive="TRUE")
+
+```
+
+
+
+#Supervised analysis (Machine learning predictive modeling)
+```{r}
+#Let´s see which is the best model to predict the review score.
+
+library(rattle)
+library(DMwR)
+library(caret)
+library(lattice)
+library(e1071)
+library(tidyverse)
+
+# 10-fold Cross-Validation
+control <- trainControl(method="cv", number=10)
+metric <- "Accuracy"
+
+# Linear Discriminant Analysis (LDA)
+set.seed(99)
+fit.lda <- train(review_score ~., data=total6, method="lda", metric=metric, trControl=control)
+
+# Classfication and Regression Trees (CART)
+set.seed(99)
+fit.cart <- train(review_score~., data=total6, method="rpart", metric=metric, trControl=control)
+
+# k-Nearest Neighbors (KNN)
+set.seed(99)
+fit.knn <- train(review_score~., data=total6, method="knn", metric=metric, trControl=control)
+
+# Bayesian Generalized Linear Model - Logistic Regression
+set.seed(99)
+fit.logi <- train(review_score~., data=total6, method="bayesglm", metric=metric, trControl=control)
+
+
+# Random Forest
+set.seed(99)
+fit.rf <- train(review_score~., data=total6, method="rf", metric=metric, trControl=control)
+
+# Gradient Boosting Machines/XGBoost-Linear Model
+set.seed(99)
+fit.xgb <- train(review_score~., data=total6, method="xgbLinear", metric=metric, trControl=control)
+
+# Gradient Boosting Machines/XGBoost-Tree Model
+#set.seed(99)
+#fit.xgb.t <- train(review_score~., data=total6, method="xgbTree", metric=metric, trControl=control)
+
+# Select Best Model
+# summarize accuracy of models
+results <- resamples(list(lda=fit.lda, cart=fit.cart, knn=fit.knn, logi=fit.logi, rf=fit.rf, xgb.l=fit.xgb))
+summary(results)
+
+#The best model is Random Forest with a kappa of 0.40
+
+# Summarize the Best Model
+print(fit.rf)
+summary(fit.rf)
+
+```
+
+Random Forest model appears to be the best choice machine learning model when we treat our dependant variable as a categorical one. We can see it´s kappa it´s the highest in comparison with the rest of the machine learning models. 
+
+However, I will choose as the best model for my goal the Ordinal Logistic Regression. The reason for making this choice is that although its accuracy level is not has high as the one we find in the rf model(0.60 Accuracy and Kappa 0.10), it is a good alternative model for interpreting which factors influence in the review score. Random forest model is more complex and less easy for interpretation.
+
